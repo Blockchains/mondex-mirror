@@ -13,12 +13,28 @@ jobs:
       - name: wget mirror of monaf.ai
         run: |
           mkdir site
+          # Seed every sitemap route so pages not linked from the home page are captured too.
+          curl -sfL --max-time 30 https://monaf.ai/sitemap.xml | grep -oE '<loc>[^<]+' | sed 's/<loc>//' > urls.txt || true
+          echo https://monaf.ai/ >> urls.txt
           wget --mirror --page-requisites --adjust-extension --convert-links --no-parent \
                --no-host-directories -e robots=off --tries=3 --timeout=30 \
-               --user-agent="mondex-mirror-bot" -P site https://monaf.ai/ || true
+               --user-agent="mondex-mirror-bot" -P site -i urls.txt || true
           test -s site/index.html || { echo "snapshot empty"; exit 1; }
+      - name: Post-process (favicons, canonical -> monaf.ai, noindex, static, relative assets)
+        run: |
+          python3 scripts/postprocess.py site
           touch site/.nojekyll
+          cp failover/CNAME.ready site/CNAME.ready
           echo "Snapshot $(date -u +%FT%TZ) of https://monaf.ai" > site/SNAPSHOT.txt
+      - name: Verify snapshot is self-contained
+        run: |
+          set -e
+          n=$(sed 's/<loc>/\n/g' site/sitemap.xml | grep -c '^https://monaf.ai' || true)
+          echo "sitemap routes: $n"; ls site/*.html site/apr/*.html
+          for f in favicon.ico favicon-32.png favicon-192.png apple-touch-icon.png icon-512.png; do test -s site/$f; done
+          if grep -rlE '(src|href)="https://(monaf\.ai|mondex\.grok\.me)/' site --include=*.html | xargs -r grep -oE '(src|href)="https://(monaf\.ai|mondex\.grok\.me)/[^"]*"' | grep -v 'rel="canonical"' | grep -E '\.(js|css|png|jpe?g|svg|ico|webp|json)"'; then echo "absolute asset URLs remain"; exit 1; fi
+          grep -q 'rel="canonical" href="https://monaf.ai/"' site/index.html
+          grep -q 'noindex' site/index.html
       - name: gitleaks scan of snapshot
         run: |
           curl -sSL https://github.com/gitleaks/gitleaks/releases/download/v8.21.2/gitleaks_8.21.2_linux_x64.tar.gz | tar xz gitleaks
